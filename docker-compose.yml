@@ -1,0 +1,111 @@
+version: '3.8'
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Crypto Trading Pipeline — Binance BTCUSDT Kline 5m
+#
+#  Data Sources:
+#    - Binance REST API (initial 500 klines)
+#    - Binance WebSocket (real-time kline streaming)
+#
+#  Services:
+#    postgres  → database
+#    fetch     → pipeline worker (WebSocket loop)
+#    app       → dashboard PHP + REST API
+#
+#  Networks:
+#    crypto_internal → komunikasi antar container (internal)
+#    proxy_default   → Nginx Proxy Manager (external, sudah ada)
+# ══════════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ── 1. PostgreSQL ────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: crypto_postgres
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB}
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - crypto_internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── 2. Fetch / Pipeline Worker (WebSocket) ──────────────────
+  fetch:
+    build:
+      context: ./fetch
+      dockerfile: Dockerfile
+    container_name: crypto_fetch
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST:              postgres
+      DB_PORT:              5432
+      DB_NAME:              ${POSTGRES_DB}
+      DB_USER:              ${POSTGRES_USER}
+      DB_PASS:              ${POSTGRES_PASSWORD}
+      TZ:                   ${TZ}
+      BINANCE_SYMBOL:       ${BINANCE_SYMBOL}
+      BINANCE_INTERVAL:     ${BINANCE_INTERVAL}
+      BINANCE_KLINE_LIMIT:  ${BINANCE_KLINE_LIMIT}
+      BINANCE_WS_URL:       ${BINANCE_WS_URL}
+      BINANCE_WS_PING_INTERVAL: ${BINANCE_WS_PING_INTERVAL}
+      BINANCE_WS_SESSION_MAX:  ${BINANCE_WS_SESSION_MAX}
+      INDICATOR_WINDOW:     ${INDICATOR_WINDOW}
+      RSI_PERIOD:           ${RSI_PERIOD}
+      MACD_FAST:            ${MACD_FAST}
+      MACD_SLOW:            ${MACD_SLOW}
+      MACD_SIGNAL:          ${MACD_SIGNAL}
+      BB_PERIOD:            ${BB_PERIOD}
+      BB_STDDEV:            ${BB_STDDEV}
+      STOCH_K_PERIOD:       ${STOCH_K_PERIOD}
+      STOCH_D_PERIOD:       ${STOCH_D_PERIOD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - crypto_internal
+
+  # ── 3. App / Dashboard + API ─────────────────────────────────
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: crypto_app
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST:     postgres
+      DB_PORT:     5432
+      DB_NAME:     ${POSTGRES_DB}
+      DB_USER:     ${POSTGRES_USER}
+      DB_PASS:     ${POSTGRES_PASSWORD}
+      TZ:          ${TZ}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - crypto_internal
+      - proxy_default
+
+# ── Networks ─────────────────────────────────────────────────
+networks:
+  crypto_internal:
+    driver: bridge
+  proxy_default:
+    external: true   # Nginx Proxy Manager network yang sudah ada
+
+# ── Volumes ──────────────────────────────────────────────────
+volumes:
+  postgres_data:

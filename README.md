@@ -1,187 +1,165 @@
-# ========================
-# FINAL BACKEND ARCHITECTURE (SIMPLIFIED)
-# CRYPTO DATA PIPELINE BTC/IDR
-# ========================
+# Crypto Trading Pipeline — BTC/USDT
 
-## 🎯 CORE GOAL
-1. Ingest data (fetch market)
-2. Transform (indikator teknikal)
-3. Generate signal
-4. Evaluate (ROI berbasis trade event)
-5. Serve (API)
+Dashboard trading real-time berbasis **Binance API** (REST + WebSocket) dengan indikator teknikal
+(RSI, MACD, Bollinger Bands, Stochastic, Parabolic SAR) dan ensemble signal.
 
 ---
 
-## 🧱 DATA LAYER
+## Struktur Proyek
 
-### 1. ticker_1m (RAW DATA)
-- time (PK)
-- price_last
-- price_buy
-- price_sell
-- high
-- low
-- vol_btc
-- vol_idr
-
----
-
-### 2. indicator_1m (NUMERIC TRANSFORM)
-- time (PK)
-- rsi
-- macd
-- macd_signal
-- bb_upper
-- bb_lower
-- stoch
-- psar
-
----
-
-### 3. signal_1m (ALL SIGNAL)
-- time (PK)
-- rsi        (-1 SELL, 0 HOLD, 1 BUY)
-- macd       (-1 SELL, 0 HOLD, 1 BUY)
-- bollinger  (-1 SELL, 0 HOLD, 1 BUY)
-- stoch      (-1 SELL, 0 HOLD, 1 BUY)
-- psar       (-1 SELL, 0 HOLD, 1 BUY)
-- ensemble   (-1 SELL, 0 HOLD, 1 BUY)
-
-RULE ENSEMBLE:
-- BUY  jika ≥ 4 indikator = BUY
-- SELL jika ≥ 4 indikator = SELL
-- HOLD selain itu
+```
+indikator-trade/
+├── docker-compose.yml       ← Orkestrasi semua service
+├── .env.example             ← Template .env untuk referensi
+│
+├── fetch/                   ← Worker: pipeline PHP
+│   ├── Dockerfile
+│   ├── composer.json
+│   └── pipeline.php         ← Loop fetch → indicator → signal → trade state
+│
+├── app/                     ← Dashboard web PHP
+│   ├── Dockerfile
+│   ├── db.php               ← Koneksi database (singleton PDO)
+│   └── public/              ← Apache document root
+│       ├── .htaccess
+│       ├── index.php        ← Dashboard frontend (HTML + Chart.js)
+│       └── api/
+│           └── data.php     ← REST API endpoint
+│
+└── postgres/
+    └── init/
+        ├── 01_schema.sql    ← Schema awal (dijalankan saat init container)
+        └── 02_migrate.sql   ← Migration: summary_performance single-row design
+```
 
 ---
 
-### 4. trade_log (EVENT-BASED TRADING)
-- id
-- strategy (rsi/macd/bollinger/stoch/psar/ensemble)
-- entry_time
-- exit_time
-- entry_price
-- exit_price
-- position (1 BUY, -1 SELL)
-- roi
+## Cara Menjalankan
 
-FORMULA:
-ROI = (exit_price - entry_price) / entry_price * 100
+### 1. Pastikan Docker & Docker Compose terinstall
+```bash
+docker --version
+docker compose version
+```
 
-NOTE:
-- hanya disimpan saat trade CLOSE
-- bukan per menit
+### 2. Clone / salin proyek
+```bash
+cd /opt  # atau direktori pilihan Anda
+# letakkan folder indikator-trade di sini
+```
 
----
+### 3. Salin dan sesuaikan .env
+```bash
+cp .env.example .env
+# Edit .env jika ingin mengganti kredensial, symbol, atau timezone
+```
 
-### 5. performance_summary (OPTIONAL / DERIVED)
-- strategy
-- total_trade
-- win_rate
-- avg_roi
-- profit_factor
-- max_drawdown
+### 4. Build dan jalankan
+```bash
+docker compose up -d --build
+```
 
----
-
-## ⚙️ PIPELINE FLOW
-
-[Worker Loop]
-
-1. FETCH
-   → insert ke ticker_1m
-
-2. INDICATOR ENGINE
-   → ticker_1m → indicator_1m
-
-3. SIGNAL ENGINE
-   → indicator_1m → signal_1m
-
-4. TRADE ENGINE (STATE MACHINE)
-   → signal_1m + price → trade_log
+### 5. Cek status semua container
+```bash
+docker compose ps
+docker compose logs -f fetch   # melihat log pipeline
+```
 
 ---
 
-## 🧠 TRADE ENGINE LOGIC (CORE)
+## Akses Dashboard
 
-IF signal berubah dari HOLD → BUY:
-    open position
+Buka browser:
+```
+http://localhost:8080
+```
 
-IF signal berubah dari BUY → SELL:
-    close position → hitung ROI
+Atau jika menggunakan Nginx Proxy Manager, konfigurasi Proxy Host:
+- **Scheme**: `http`
+- **Forward Hostname**: `crypto_app`
+- **Forward Port**: `80`
 
-IF signal berubah dari HOLD → SELL:
-    open short (optional)
-
-IF signal berubah dari SELL → BUY:
-    close position → hitung ROI
-
----
-
-## 🐳 DOCKER ARCHITECTURE
-
-SERVICES:
-
-1. app (PHP)
-   - REST API
-   - indicator engine
-   - signal engine
-   - trade engine
-
-2. worker (PHP CLI)
-   - loop setiap 60 detik
-   - menjalankan pipeline
-
-3. db (PostgreSQL)
+API endpoint tersedia di:
+```
+/api/data.php?action=ticker
+/api/data.php?action=signals
+/api/data.php?action=raw_data
+/api/data.php?action=raw_signal
+/api/data.php?action=indicator_combo
+/api/data.php?action=trade_signals
+/api/data.php?action=trade_states
+/api/data.php?action=roi_states
+/api/data.php?action=roi_summary
+/api/data.php?action=performance
+/api/data.php?action=stats
+```
 
 ---
 
-## 🔄 WORKER LOOP
+## Arsitektur
 
-while true:
-    fetch data dari API
-    insert ticker
-
-    calculate indicator
-    insert indicator
-
-    generate signal
-    insert signal
-
-    run trade engine
-    update trade_log
-
-    sleep(60)
-
----
-
-## 🌐 API ENDPOINT (MINIMAL)
-
-GET /ticker/latest
-GET /indicator/latest
-GET /signal/latest
-GET /trades
-GET /performance
-
----
-
-## 📊 FRONTEND (MINIMAL)
-
-1. Price + Indicator Chart
-2. Signal Overlay
-3. Trade + ROI
+```
+[Binance REST + WebSocket]
+     │
+     ▼
+[fetch container]  ─────────────────────────┐
+  pipeline.php                              │
+  1. Fetch kline via REST (500 data awal)   │ crypto_internal network
+  2. Stream kline via WebSocket real-time  │
+  3. Hitung RSI, MACD, BB, Stoch, PSAR     │
+  4. Generate signal per indikator          │
+  5. Ensemble voting (>=3 dari 5 = BUY/SELL) │
+  6. Trade state machine (OPEN/CLOSED)      │
+  7. Hitung ROI & performance summary       │
+     │                                      │
+     └──────────────── [postgres] ◄─────────┘
+                            │
+                       [app container]
+                       db.php + REST API + Dashboard
+                            │
+                  [Nginx Proxy Manager] (opsional)
+                            │
+                        [Browser]
+                     Dashboard Chart.js
+```
 
 ---
 
-## ⚖️ DESIGN PRINCIPLES
+## Tabel Database
 
-- modular pipeline
-- event-based trading (bukan per menit)
-- time-series consistency
-- scalable worker
-- minimal table, maksimal fungsi
+| Tabel | Isi |
+|---|---|
+| `raw_ticker_btcusdt` | Data kline mentah dari Binance (OHLCV) |
+| `raw_indicator_btcusdt` | Nilai RSI, MACD, BB, Stochastic, PSAR |
+| `raw_signal_btcusdt` | Sinyal per indikator (BUY/SELL/HOLD) |
+| `trade_signal_btcusdt` | Ensemble signal hasil voting |
+| `trade_state_btcusdt` | State machine per strategi (OPEN/CLOSED) |
+| `raw_roi_btcusdt` | ROI setiap trade yang ditutup |
+| `summary_performance_btcusdt` | Agregat performa (win rate, avg ROI, dll) |
 
 ---
 
-## 🚀 MENTAL MODEL
+## Troubleshooting
 
-RAW → TRANSFORM → SIGNAL → EVENT → ANALYTICS
+**Pipeline tidak berjalan:**
+```bash
+docker compose logs fetch
+```
+
+**Database tidak bisa diakses:**
+```bash
+docker compose logs postgres
+docker exec -it crypto_postgres psql -U postgres -d trading_db
+```
+
+**Rebuild setelah perubahan kode:**
+```bash
+docker compose up -d --build fetch   # rebuild worker saja
+docker compose up -d --build app     # rebuild dashboard saja
+```
+
+**Reset total (hapus semua data):**
+```bash
+docker compose down -v   # menghapus volume postgres_data
+docker compose up -d --build
+```
